@@ -142,10 +142,39 @@ Hai drive × 5 phút hiện chạy hết trong khoảng 1 phút trên một cont
 
 Câu SQL bạn thêm vào dashboard và điều nó cho biết:
 
-(trả lời ở đây)
+Thẻ **"[Câu hỏi riêng] Tỷ lệ khung bị loại theo từng trip"** trên dashboard "Day 9: video data pipeline" (`report/screenshots/metabase_dashboard.png`):
+
+```sql
+select trip_id, drive_id, split, frames, frames - frames_kept as dropped,
+       round(100.0 * (frames - frames_kept) / frames, 1) as drop_pct,
+       round(avg_speed_kmh::numeric, 1) as avg_speed_kmh
+from marts.mart_trip_summary
+order by drop_pct desc
+```
+
+Kết quả: tỷ lệ loại không đều giữa các trip, từ **0%** (`trip-09209, 07304, 01037, 04324`) đến **56.7%** (`trip-04622`: 34/60 khung bị loại); tiếp theo là `trip-03904` 50.0% và `trip-02086` 46.7%. Sáu trip loại nhiều nhất đều thuộc **drive A**. Tôi kiểm tra lý do trong `silver_frame_telemetry`: cả bốn trip đứng đầu bị loại **hoàn toàn vì `is_near_dup`** (0 đen, 0 mờ, 0 mất đồng bộ). Theo split, val mất 23.7% số khung, train 18.1%, test 13.1%, nên tỷ lệ khung giữ lại không cân bằng giữa các split dù chia theo trip.
+
+Câu hỏi thứ hai (điểm cộng), thẻ **"[Câu hỏi riêng 2] Tỷ lệ khung bị loại theo dải tốc độ của trip"**: gộp trip theo tốc độ trung bình thì tỷ lệ loại là **32.4%** (< 20 km/h, 5 trip), 17.1% (20–50), 18.9% (50–80), **7.8%** (≥ 80 km/h, 6 trip). Xe càng chậm, càng nhiều khung bị coi là trùng. Điều này khớp với Câu 5 và cho thấy lấy mẫu 2 khung/giây cố định là lãng phí khi xe chạy chậm. Điểm bất thường là `trip-04622` chạy đều **63–67 km/h** mà vẫn mất 34 khung (xem phần Nhìn lại).
 
 ## Nhìn lại
 
 Điều bạn thấy bất ngờ nhất, điều gì còn chưa rõ, và một lỗi dữ liệu mà bạn nghĩ pipeline **chưa** bắt được (nếu có). Tối đa 8 dòng.
 
-(trả lời ở đây)
+- **Bất ngờ nhất**: chia ngẫu nhiên theo khung hình làm **26/26** trip có mặt ở cả train lẫn test. Tôi biết là có rò rỉ, nhưng không nghĩ là toàn bộ. Cũng bất ngờ khi chạy lại trip bị sập không đổi một bit nào của `dataset_version`.
+- **Sự cố khi dựng môi trường**: Colima không có plugin `buildx`, nên `docker compose ... up --build` rơi về builder cũ và lỗi ở `COPY --chmod`. Cài `docker-buildx` (Homebrew) là sửa được. Thêm nữa, lệnh lấy trip trong GUIDE (`int(MSSV) % 26`) không chạy với MSSV có chữ (`2A…`), nên tôi tự chọn quy tắc bỏ ký tự không phải số.
+- **Chưa rõ**: vì sao `max_gap_ms` chỉ có một khoảng trống mỗi drive mà `sync_lost` lại là 7 khung (tôi đoán là 3 s × 2 khung/s cộng một khung biên), và lineage nên ghi git commit của mã ở đâu.
+- **Lỗi pipeline chưa bắt được**: dHash 2 bit cho **dương tính giả ở đường cao tốc ít chi tiết**. `trip-04622` có 34/60 khung bị coi là trùng trong khi tốc độ 62.9–67.1 km/h (nhóm "trùng" và "không trùng" có cùng tốc độ trung bình 67.1 km/h, độ nét gần bằng nhau). Dù 12 khung trong số đó là đoạn camera đứng hình 6 giây, vẫn còn ≥ 22 khung có thể là cảnh khác nhau thật nhưng bị loại. Một kiểm tra chéo đơn giản là: khung "trùng" mà telemetry cho thấy xe đã đi > X mét thì không coi là trùng. Ngoài ra, telemetry B bị trừ độ lệch đồng hồ **cố định** 1500 ms; nếu đồng hồ trôi dần trong chuyến thì pipeline không phát hiện được.
+
+## Điểm cộng · Thí nghiệm riêng: dung sai đồng bộ `sync_tol_ms`
+
+Tôi chạy lại `silver_frame_telemetry` và gold với `--vars '{sync_tol_ms: N}'` (không sửa `dbt_project.yml`; chạy lại không `--vars` để khôi phục, gold trở về 1020 khung). Bằng chứng: `report/evidence/bonus_sync_tol.json`.
+
+| `sync_tol_ms` | khung mất đồng bộ A | khung mất đồng bộ B | khung trong gold |
+|---|---|---|---|
+| 50 | 272 | 328 | 539 |
+| 100 | 137 | 187 | 763 |
+| **150 (mặc định)** | **7** | **7** | **1020** |
+| 300 | 7 | 7 | 1020 |
+| 1000 | 5 | 6 | 1023 |
+
+Telemetry khoảng 10 Hz, nên độ lệch ASOF giữa khung và mẫu telemetry gần nhất có p50 = 18 ms (A) / 81 ms (B) và p99 = 120 ms ở cả hai drive. Ngưỡng dưới chu kỳ lấy mẫu (50–100 ms) loại oan **25–47%** dataset dù dữ liệu không có lỗi. Từ 150 ms trở lên, kết quả ổn định (chỉ còn 7 khung mỗi drive nằm trong đoạn cảm biến mất tín hiệu ≈ 3 s). Nới tới 1000 ms chỉ cứu được 3 khung, nhưng lại gắn chúng với telemetry cách tới 1 giây (≈ 25 m ở 90 km/h), tức là nhãn sai. Vì vậy 150 ms (khoảng 1.5 chu kỳ telemetry) là lựa chọn hợp lý: ngưỡng nên đặt theo **tần số của cảm biến**, không phải một số tuỳ ý.

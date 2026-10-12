@@ -1,0 +1,15 @@
+{
+  "experiment": "bonus_sync_tol_ms",
+  "student_id": "2A202602928",
+  "ran_at": "2026-10-12T10:09:30+00:00",
+  "how": "scripts/lab.sh dbt run --select silver_frame_telemetry+ --vars '{sync_tol_ms: N}' (dbt_project.yml không sửa; chạy lại không --vars để khôi phục 150)",
+  "sync_gap_ms_percentiles": {"drive_a": {"p50": 18, "p90": 111, "p99": 120}, "drive_b": {"p50": 81, "p90": 114, "p99": 120}},
+  "results": [
+    {"sync_tol_ms": 50,   "sync_lost_a": 272, "sync_lost_b": 328, "gold_frames": 539},
+    {"sync_tol_ms": 100,  "sync_lost_a": 137, "sync_lost_b": 187, "gold_frames": 763},
+    {"sync_tol_ms": 150,  "sync_lost_a": 7,   "sync_lost_b": 7,   "gold_frames": 1020},
+    {"sync_tol_ms": 300,  "sync_lost_a": 7,   "sync_lost_b": 7,   "gold_frames": 1020},
+    {"sync_tol_ms": 1000, "sync_lost_a": 5,   "sync_lost_b": 6,   "gold_frames": 1023}
+  ],
+  "restored_gold_frames": 1020
+}
