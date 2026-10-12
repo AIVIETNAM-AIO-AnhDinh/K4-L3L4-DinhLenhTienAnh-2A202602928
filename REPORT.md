@@ -4,15 +4,15 @@
 
 | | |
 |---|---|
-| Họ và tên | `<điền>` |
-| MSSV (đúng bằng `LAB_STUDENT_ID` trong `.env`) | `<điền>` |
-| GitHub | `<điền: tên tài khoản>` |
-| Trip dùng cho bài tập sập và chạy lại (xem GUIDE, bước 5) | `<điền: trip-xxxxx>` |
+| Họ và tên | Đinh Lệnh Tiến Anh |
+| MSSV (đúng bằng `LAB_STUDENT_ID` trong `.env`) | `2A202602928` |
+| GitHub | `AIVIETNAM-AIO-AnhDinh` |
+| Trip dùng cho bài tập sập và chạy lại (xem GUIDE, bước 5) | `trip-02689` (MSSV có chữ `A` nên lệnh trong GUIDE báo lỗi `int()`; tôi bỏ ký tự không phải số: `2202602928 % 26 = 6` → phần tử thứ 6 của `list-trips`) |
 
 ## Kết quả cuối
 
-- `dataset_version` của bạn: `<điền>`  (phải khớp `report/evidence/run_summary.json`)
-- Số khung hình train / val / test của bạn: `<điền>`
+- `dataset_version` của bạn: `6d80a6cb7a5b`  (khớp `report/evidence/run_summary.json`)
+- Số khung hình train / val / test của bạn: **729 / 132 / 159** (tổng 1020 khung, 18 / 4 / 4 trip)
 - `report/verify.txt`: tạo bằng `python3 scripts/check_submission.py --save-verify` (phải có `27/27 checks passed`).
 - Ảnh chụp trong `report/screenshots/`: `airflow_graph.png`, `minio_lake.png`, `metabase_dashboard.png`, và ảnh bài tập sập/chạy lại (log task đỏ thấy trip của bạn).
 
@@ -21,7 +21,16 @@
 ### Câu 1
 Liệt kê **ít nhất 4 khác biệt** giữa telemetry nguồn A và nguồn B mà bạn thấy ở bronze. Vì sao pipeline giữ **mỗi nguồn một bảng bronze** và để mọi cột ở dạng chữ, thay vì gộp và ép kiểu ngay?
 
-(trả lời ở đây)
+Bước 1 nạp 3021 dòng (A) và 3234 dòng (B); lần nạp thứ hai báo `already present` cho cả video lẫn telemetry, và `cli history bronze.raw_telemetry_a` chỉ có **một commit** (version 0, `rows_added=3021`) vì file được nhận diện bằng sha256 (A `636ba1a9…`, B `bfa62703…`).
+
+Khác biệt A và B thấy ngay ở bronze:
+1. **Tên cột**: `ts_utc, speed_mps, heading_deg, lat, lon, alt_m, acc_x, acc_y, gas, brake, steer` (A) so với `timestamp_ms, spd_kmh, hdg, latitude, longitude, altitude, ax, ay, throttle_pct, brake_pct, steering` (B).
+2. **Đơn vị tốc độ**: A là m/s (`1.213`), B là km/h (`55.11`).
+3. **Kiểu thời gian**: A là chuỗi ISO UTC (`2025-10-07T08:00:00.014Z`), B là epoch mili giây (`1759933801509`).
+4. **Bàn đạp**: A là tỷ lệ 0..1 (`gas=0.028`), B là phần trăm (`throttle_pct=2.0`).
+5. **Đồng hồ**: B chạy nhanh hơn video `telemetry_clock_offset_ms = 1500` (A = 0), khai báo trong `sources.json` và lưu ở `bronze.video_files`.
+
+Giữ mỗi nguồn một bảng và để mọi cột là chữ vì bronze phải là **bản ghi nguyên gốc, chỉ thêm**: nếu ép kiểu ngay thì ô trống, `250` km/h hay một định dạng lạ sẽ làm hỏng cả lần nạp hoặc bị biến thành NULL im lặng, và ta mất dữ liệu gốc để làm lại. Hai schema khác nhau thì gộp sớm buộc phải đoán cách đổi đơn vị ngay lúc nạp; tách ra cho phép silver sửa luật chuẩn hoá rồi **chạy lại từ bronze** bất cứ lúc nào (schema-on-read), và mỗi dòng còn giữ `_source_file, _batch_id, _row_no` để truy vết.
 
 ## Bước 2 · Silver telemetry
 
