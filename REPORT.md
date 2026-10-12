@@ -63,18 +63,26 @@ Thí nghiệm `break-gate` (`report/evidence/break_gate.json`): nới `max_speed
 ### Câu 4
 Dựa vào `idempotency.json`: số dòng trước và sau hai lần chạy lại, và khi ghi kiểu `append`. Vì sao Delta `overwrite` theo partition (một trip) an toàn hơn xoá rồi ghi lại, nhất là khi giữa chừng có lỗi?
 
-(trả lời ở đây)
+Theo `report/evidence/idempotency.json` (trip `trip-00003`, 60 khung):
+- Cách của pipeline (Delta `overwrite` với predicate `trip_id = 'trip-00003'`): **trước 1246 dòng, sau hai lần chạy lại vẫn 1246 dòng**; dấu vân tay bảng `cb6118dbb0b8` → `cb6118dbb0b8`, không đổi.
+- Cách sai (`append`, chạy 2 lần): trip 60 khung thành **120 dòng**, nhân đôi.
+
+`cli history silver.frames` cho thấy mỗi lần ghi trip là một commit `WRITE` có `predicate: trip_id = '…'` (ví dụ version 25 `rows_added=23` cho `trip-02689` khi chạy lại ở bước 5). Overwrite theo partition an toàn hơn "DELETE rồi INSERT" vì nó là **một commit nguyên tử** trong transaction log của Delta: file mới được ghi xong rồi mới có một commit vừa gỡ file cũ của partition vừa thêm file mới. Nếu tiến trình chết giữa chừng (như trip của tôi ở bước 5) thì không có commit nào, người đọc vẫn thấy phiên bản cũ đầy đủ, và file rác chưa commit bị bỏ qua (`VACUUM` dọn sau). Với xoá rồi ghi, lỗi giữa hai thao tác để lại một partition **rỗng hoặc ghi một nửa** mà người đọc đồng thời nhìn thấy được. Ngoài ra, overwrite theo predicate chỉ đụng đến một trip nên backfill hay chạy lại một trip không ảnh hưởng 25 trip còn lại, và luôn có time travel để quay lại version trước.
 
 ### Câu 5
 Khung hình **đen** và khung hình **tối** khác nhau thế nào, pipeline xử lý khác nhau ra sao, bạn có đồng ý không? Dựa vào `threshold.json`: nếu chọn ngưỡng 0, 2, 6 thì bao nhiêu khung bị coi là trùng ở mỗi drive? Bạn chọn ngưỡng nào, vì sao, và ngưỡng đó phụ thuộc vào tốc độ xe thế nào?
 
 | dHash khác tối đa | số khung trùng, drive A | số khung trùng, drive B |
 |---|---|---|
-| 0 | | |
-| 2 | | |
-| 6 | | |
+| 0 | 60 / 602 | 8 / 644 |
+| 2 (đang dùng) | 149 / 602 | 52 / 644 |
+| 6 | 363 / 602 | 244 / 644 |
 
-(trả lời ở đây)
+(đủ dải từ `threshold.json`: A 60, 109, 149, 270, 363, 438 và B 8, 24, 52, 137, 244, 350 với ngưỡng 0, 1, 2, 4, 6, 8 bit.)
+
+**Đen và tối**: khung đen là **lỗi cảm biến** (độ sáng trung bình < `dark_luma = 12`; thực tế 6 khung ở A và 4 ở B đều có brightness = **0.0**), không có thông tin gì nên bị loại khỏi gold. Khung tối (12 ≤ độ sáng < `dark_soft = 40`) là **điều kiện thật**: đường hầm, bóng râm. Pipeline gắn cờ `is_dark` nhưng **giữ lại** (A 4 khung, độ sáng 35.8–39.6; B **61** khung, 12.8–39.6). Tôi đồng ý: mô hình lái xe phải học được cảnh thiếu sáng, bỏ chúng sẽ làm dataset thiên về trời sáng và mô hình sẽ hỏng đúng lúc khó nhất. Cờ vẫn hữu ích để cân bằng hoặc phân tích lỗi theo điều kiện ánh sáng. Điều tôi chưa thích: ranh giới 12 là cứng, nên một khung đường hầm rất tối (≈ 12.8 ở B) chỉ cách "bị loại" một chút.
+
+**Chọn ngưỡng**: tôi giữ **2 bit**. Ngưỡng 0 chỉ bắt khung giống hệt (A 60), bỏ sót camera đứng hình có nhiễu nén. Verify vẫn bắt 11/12 khung đứng hình ở ngưỡng 2. Ngưỡng 6 loại 363/602 khung của A (60%) và 244/644 của B, tức là đã xoá cả những khung khác nhau thật khi xe chạy. Ngưỡng phụ thuộc tốc độ: ở 2 khung/giây, xe chậm thì hai khung liền nhau gần như giống hệt. Trên dữ liệu của tôi (ngưỡng 2), tỷ lệ khung bị cờ trùng là **50.9% khi < 10 km/h** (55/108), nhưng chỉ 11.4% ở 10–40 km/h và **8.9% khi ≥ 70 km/h**. Vì vậy ngưỡng lý tưởng nên **giảm khi xe chạy nhanh** (khung khác nhau nhiều, chỉ coi trùng khi thật sự đứng hình), hoặc tốt hơn là lấy mẫu theo quãng đường thay vì theo thời gian. Drive A có nhiều khung trùng hơn B (149 so với 52) vì A chạy chậm hơn và có đoạn camera đứng hình 6 giây.
 
 ## Bước 4 · Gold
 
