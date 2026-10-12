@@ -120,12 +120,23 @@ Ba tháng sau, để tái tạo đúng dataset cần: (1) hai file video đúng 
 ### Câu 9
 Mô tả chính xác điều xảy ra khi trip của bạn sập rồi chạy lại: bao nhiêu task chuyển đỏ, bao nhiêu task `upstream_failed`, bạn clear gì, dữ liệu có nhân đôi không, `dataset_version` có đổi không? Bằng chứng (ảnh, số) là gì?
 
-(trả lời ở đây)
+Trip của tôi: **`trip-02689`** (`silver_frames` map index 6). Tôi đặt `LAB_FAIL_ONCE=trip-02689`, chạy `docker compose --profile orchestrate up -d`, trigger `day09_reset` (xanh) rồi `day09_video_pipeline` (run `manual__2026-10-12T10:03:29+00:00`):
+- **1 task đỏ**: `silver_frames [6]`, log ghi `RuntimeError: simulated crash while extracting trip-02689; run it again` (`report/screenshots/crash_task_log.png`).
+- **7 task `upstream_failed`**: `dbt_run_silver, dbt_test_silver, dbt_run_gold, dbt_test_gold, publish_lake, export_dataset, publish_warehouse`.
+- **29 task xanh**: `bronze_drive_a, bronze_drive_b, bronze_trips, trip_commands` và 25 trip còn lại của `silver_frames` (`crash_graph_failed.png`). Lúc đó `silver.frames` có **1223 dòng, 25 trip**: trip hỏng không ghi gì (không có commit dở dang) và 25 trip khác không bị ảnh hưởng.
+
+Tôi **chỉ clear task đỏ** `silver_frames [6]` (Clear task, mặc định gồm Downstream). Hộp thoại báo **Affected Tasks: 8** = 1 task đỏ + 7 task phía sau. Bronze và 25 trip xanh **không chạy lại**. Lần thử 2 của `silver_frames [6]` xanh (`crash_task_tries.png`: Task Tries 1 đỏ, 2 xanh) và cả DAG xanh **37/37** (`crash_graph_after_clear.png`).
+
+Dữ liệu **không nhân đôi**: `silver.frames` thành **1246 dòng, 26 trip, 1246 `frame_id` khác nhau**; `trip-02689` có đúng **23 dòng** từ một commit (`version 25, WRITE, rows_added=23, predicate trip_id = 'trip-02689'`). `scripts/lab.sh verify` vẫn **27/27** và `dataset_version` vẫn **`6d80a6cb7a5b`**, giống lần chạy không lỗi. Lý do: mỗi trip là một task và một partition riêng, ghi bằng overwrite theo predicate, nên chạy lại một trip là idempotent. Xong bài tập, tôi xoá dòng `LAB_FAIL_ONCE` khỏi `.env` và khởi động lại Airflow.
 
 ### Câu 10
 Nâng từ 2 drive lên **500 xe mỗi ngày**: ba thành phần nào của pipeline này sẽ vỡ đầu tiên, và bạn thay bằng gì (nối với slide 12, 22, 23)?
 
-(trả lời ở đây)
+Hai drive × 5 phút hiện chạy hết trong khoảng 1 phút trên một container. 500 xe/ngày, mỗi xe vài giờ và 7 camera, tức là nhiều hơn vài nghìn lần. Ba chỗ vỡ đầu tiên:
+
+1. **Giải mã video và trích khung** (slide 24: decode là nút cổ chai). Hiện tại FFmpeg chạy trên CPU trong **một** container Airflow `LocalExecutor` với `PARALLELISM=2`. Thay bằng: worker phân tán (Airflow `KubernetesExecutor`/Celery, hoặc Ray/Spark) tự scale theo hàng đợi, giải mã bằng GPU (NVDEC), xử lý theo sự kiện khi file vừa lên object storage, và nén nhiều camera trong một job.
+2. **DuckDB + dbt trên một máy với một file `lakehouse.duckdb`** (slide 22). Đây là một tiến trình, một người ghi, và mỗi lần chạy dựng lại toàn bộ bảng silver/gold. Thay bằng engine phân tán đọc thẳng Delta (Spark/Databricks hay Trino, với `dbt-spark`), model `incremental` theo partition ngày/xe, và chạy `OPTIMIZE`/compaction vì ghi theo từng trip sẽ sinh rất nhiều file nhỏ.
+3. **Điều phối và xuất dataset**: dynamic mapping một task cho mỗi trip (26 task) sẽ thành hàng chục nghìn task mỗi ngày và làm nghẽn scheduler cùng metadata DB. Đồng thời `export_dataset` **copy từng ảnh** vào `gold/datasets/<version>/`, nên mỗi version là một bản sao đầy đủ, còn `mart_frame_gallery` nạp từng khung vào Postgres. Thay bằng: gom trip thành batch theo xe/ngày (một task xử lý nhiều trip), dataset version chỉ là **manifest trỏ tới ảnh** đã có ở silver (hoặc shard WebDataset/tar), và warehouse chỉ giữ số liệu tổng hợp, ảnh để ở object storage.
 
 ## Câu hỏi riêng của bạn trên Metabase
 
